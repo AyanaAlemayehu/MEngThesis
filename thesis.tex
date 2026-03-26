@@ -1,0 +1,52 @@
+% ----------------------------------preamble----------------------------------
+\DocumentMetadata
+{
+	lang		= en-US, % default language
+	pdfversion  = 1.7,
+	pdfstandard = a-2b,
+}
+\documentclass[twoside]{mitthesis}
+\hypersetup{%
+	pdfsubject={TODO: Write PDF subject},% 
+	pdfkeywords={TODO: add keywords},
+	pdfcontactemail={TODO: decide if i want a contact email}
+}
+\usepackage[style=ext-numeric-comp,giveninits=true,maxbibnames=10,sorting=none,language=american]{biblatex}
+\addbibresource{bib.bib}
+% --------------------------------------------------------------------
+
+% ----------------------------------title----------------------------------
+\begin{document}
+
+\title{TODO: Insert Title}
+\Author{Ayana K. Alemayehu}{Department of Electrical Engineering and Computer Science}
+\Degree{Master of Engineering in Electrical Engineering and Computer Science}{Department of Electrical Engineering and Computer Science}
+\Supervisor{Rachit Nigam}{Professor of Electrical Engineering and Computer Science}[Department of Electrical Engineering and Computer Science]
+\Acceptor{Katrina LaCurts}{Chair}{Master of Engineering Thesis Committee}
+\DegreeDate{May}{2026}
+\ThesisDate{TODO: Put degree date}
+\maketitle
+% --------------------------------------------------------------------
+
+% ----------------------------------metadata----------------------------------
+\begin{abstract}
+	\input{abstract.tex}
+\end{abstract}
+\include{acknowledgments}
+
+\tableofcontents
+\listoffigures
+\listoftables
+% --------------------------------------------------------------------
+
+% ----------------------------------chapters----------------------------------
+\include{chapter_one}
+% --------------------------------------------------------------------
+
+% ----------------------------------bib----------------------------------
+\defbibheading{bibintoc}{\chapter*{#1}\addcontentsline{toc}{backmatter}{\refname}} 
+\printbibliography[title={\refname},heading=bibintoc]
+% --------------------------------------------------------------------
+\end{document}
+
+
