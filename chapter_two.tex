@@ -1,0 +1,57 @@
+\chapter{Background}
+% probably talk about what is SpMV anyway as well, and the family of operations
+\section[XLS Overview]{What is XLS?}
+XLS, standing for Accelerated Hardware Synthesis, is a development toolchain capable of generating both software and hardware designs from code written in either of its languages: XLScc and DSLX. This flexibility aims to address the growing need of specialized hardware to realize performance gains, enabling users to offload computations to hardware at their choosing \cite{xlsweb}. XLScc is embedded in C++ and DSLX, 
+% bad wording: can i say that?
+the language of focus, is their domain specific language.
+
+DSLX provides two functional primitives to describe computations: funcs and procs. Funcs are stateless functions that return a value. 
+\begin{lstlisting}[caption=An example func, captionpos=b]
+fn mul_add(a: u32, b: u32, c: u32) -> {
+    let d = a*b + c;
+    (d)
+}
+\end{lstlisting}
+Procs, standing for Communicating Sequential Processes, are stateful modules capable of communicating with one another using directional channels. The model of communication is based upon Kahn Process Networks, where IO operations, such as sends and receives, produce tokens that can be used to order the operations with respect to one another. 
+\begin{lstlisting}[caption=An example proc. join() produces a new token useful for ordering IO operations \textit{after} all the tokens in its parameter list, captionpos=b]
+proc mul_add{
+    a:      chan<u32> in;
+    b:      chan<u32> in;
+    c:      chan<u32> in;
+    d:      chan<u32> out;
+    config(
+        a: chan<u32> in, b: chan<u32> in,
+        c: chan<u32> in, d: chan<u32> out
+    ) {(a, b, c, d)}
+    init {()}
+    next (state: ()){
+        let (tok1, av) = recv(token(), a);
+        let (tok2, bv) = recv(token(), b);
+        let (tok3, cv) = recv(token(), c);
+        let tok = join(tok1, tok2, tok3);
+        send(tok, d, av*bv + cv);
+    }
+}
+\end{lstlisting}
+DSLX generates hardware by lowering the encoded logic into SystemVerilog modules. The pipelines and state machines generated can be additionally configured through compilation flags.
+
+A further introduction to DSLX programming can be found on the XLS website.
+
+% do i talk about XLS inspirations (Handel-C) and/or compare XLS to existing programming languages?
+\section[Sparse Matrix Computations]{Sparse Matrix Computations} % should i just combine this with hisparse, i am litearlly just going to say SpMV means sparse matrix which means many zeros lol
+% i  think i  do do this section as especially talking about compressed sparse row and compressed sparse column, that will segue into Hisparse architecture overview (where I explain hisparse streaming format from how to make it from CSR, and the streaming benefit it gives compared to CSR)
+Sparse matrix computations are a family of matrix operations where many elements of the input matrix are zeros. The operations are often denoted in shorthand with "Sp" highlighting which matrix is sparse in the notation, thus SpMSpM and SpMV indicates a sparse matrix-matrix and sparse matrix-vector operation respectively. As the zeros of the sparse matrix can be trivially ignored when computing the result of the operation, traditional dense algorithms waste both compute resources and useful memory bandwidth when applied to sparse workloads. By instead tailoring the software and/or hardware design for these sparse workloads, performance exceeding a dense computation can be achieved.
+
+% CSR, CSC, COO
+Often the storage format of the matrix is optimized to address the sparsity of the input matrix. Compressed Sparse Row (CSR) is a common sparse matrix storage format where a traditional two dimensional array representing the matrix is replaced with three arrays: a value array containing the non-zero matrix elements, a column array containing the column indicies of the elements, and a monotonically increasing row array encoding the row indices of the elements. Unlike the column array, the row array is not the direct row indices of the elements.
+% bad wording: below (maybe?)
+In other words, it is not the same length as the value array. Instead, the values of the row array represent the index ranges of the value array that reside on a particular row. 
+% perhaps figure, perhaps not. Though, i could use a figure to make a worked example with my spmv1.json, showing the changes that HiSparse's format provides and establishing familiarity with the reader.
+A row array of the form \lstinline|[0, 2, 2, ...]| implies that within the value array, indices 0 \rightarrow 2 (two elements) reside on the first row, indices 2 \rightarrow 2 (no elements) reside on the second row, and so on. Each successive value in the row array represents the end of the index range of the next row in the matrix. As the name implies, this row array is ideally compressed compared to a simpler direct encoding of the indicies when the input matrix holds many empty rows. Its mirror form, Compressed Sparse Column (CSC), performs the same compression on the column indices of the matrix. Finally, simply storing the value array, and the column and row array in their non-compressed direct encoding results in the Coordinate (COO) storage format.
+
+% is ther innovation on both the storage format as well as the multiplication?
+
+% Existing sparse architectures (nvidia 4:2, ExTensor, GPU vs FPGA?)? Perhaps end with HiSparse, "a SpMV arch used as a case study in this askdoasda" lol
+Many current workloads involve sparse matrix computations, and correspondingly there are many options for sparse accelerators within academic and commercial spaces; Introduced in their Ampere architecture, Nvidia's Tensor Cores support full throughput on 2:4 sparse matrices (2:4 implies that for every 4 successive matrix elements, 2 are zeros)\cite{nvidia24}. ExTensor, a generalized sparse tensor accelerator, uses intersections to determine not only when to perform operations between scalars, but also whether to operate on larger granularities such as entire tensors \cite{extensor}. HiSparse, a SpMV accelerator used as a case study for this work, implements its logic in Vitis HLS to show modern high level synthesis capabilities. A further analysis of the HiSparse architecture is provided in the following section.
+
+\section[HiSparse Architecure Overview]{HiSparse Architecture Overview}
