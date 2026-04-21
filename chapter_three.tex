@@ -1,0 +1,116 @@
+\chapter{Implementation}
+Implementing a correct and streaming optimized HiSparse variant in XLS involved multiple approaches due to existing bugs in the compiling toolchain and code generation peclularities that limited throughput in certain scenarios. Split into three attempts, the first encapsulates a "naive" approach that purely translates HiSparse's logic into XLS and fails to generate verilog. The second attempt addresses the code generation failures of the first through a conservative design framework. The third and final attempt modifies the HiSparse architecture to reduce the throughput penalties of the conservative framework, leading to a full streaming throughput design.
+
+\section{The Naive Implementation}
+The first attempt involved identifying the XLS features necessary to translate HiSparse's logic. At a high level, procs were used in almost all module implementations due to the prevalence of latency insensitive AXI4-Stream connections in the original Vitis HLS implementation. These stream connections can be directly expressed through XLS' streaming channels. Procs also easily supported a state machine structure within their activation to reason about the prologue, streaming, and epilogue behavior of each module, grouping like operations together under a single thematic state. Figure ~\ref{idealmatrixloaderexample} shows an abridged version of the first matrix loader implementation. 
+
+Only a single match arm within the state machine is firing in a given activation, thus each state is self contained. Regarding the IO operations themselves, both regular sends and receives as well as conditional and nonblocking variants were used depending on the original modules behavior. Conditional sends and receives also reduced the number of states necessary by providing greater control over the active codepaths within a state. To ensure IO operations were ordered across multiple activations, cross-activation tokens\cite{xlsweb} (tokens that are included within a proc's state) were used as a basis for all IO operations.
+\begin{figure}[H]
+\begin{lstlisting}[label={idealmatrixloaderexample},caption={Initial design of the matrix loader. The initial state, streaming state, and cleanup state reside in separate match arms}, captionpos=b,style=mystyle]
+pub proc matrix_loader<STREAMS_PER_CLUSTER: u32>{
+    addr:                   chan<u32> out;
+    payload:                chan<uN[64][STREAMS_PER_CLUSTER]> in;
+
+    output:                 chan<uN[64]>[STREAMS_PER_CLUSTER] out;
+    
+    // ...
+
+    next (state: ...) {
+        let new_state =
+        match (state.0) {
+            u32: 0 => { // inital state, read partition metadata
+                let new_tok = send(state.10, addr, state.1);
+                let (new_tok, metadata_one) = recv(state.10, payload);
+                let new_tok, send(state.10, addr, state.1 + u32: 1);
+                let (new_tok, metadata_two) = recv(state.10, payload);
+                // update state...
+            },
+            u32: 1 => { // streaming state, read custom matrix format and output COO matrix packets
+                let new_tok = send(state.10, addr, state.1);
+                let (new_tok, custom_matrix_format_payload) = recv(state.10, payload);
+                // process custom matrix format...
+                for (stream_idx) : (u32) in u32:0..STREAMS_PER_CLUSTER {
+                    let new_tok = send(state.10, output[stream_idx], COO_output_payload);
+                } // ...
+                // update state...
+            },
+            u32: 2 => { // send EOS, finish
+                let new_tok = send(state.10, payload, EOS);
+                // update state...
+            }
+        };
+        (new_state)
+    }
+}
+\end{lstlisting}
+\end{figure}
+
+Each module was tested both individually for correctness and in larger scale integration tests with a sample sparse matrix. These tests were performed using XLS' test proc framework, a special type of proc capable of being invoked at a software level, i.e., without the generation and simulation of verilog. The final, end-to-end test involved a single kernel, single cluster, two stream architecture computing the correct SpMV result between an 8x8 matrix and an 8 element vector. This architecture and computation will serve as the base for all future implementation attempts.
+
+% but it all wasnt sunshine and rainbows, and we failed to codegen for the following reasons...
+% do i talk about how these reasons still or still dont persist? At least for the most critical one being multiple channel ops per activation, that doesnt immediately seem obvious. Regardless though, I was operating on this MEng at the time when after exhaustive effort, I could not successfully codegen due to the below reasons, so i think it is fair as long as I said at the time of working on it I was not successful.
+
+After achieving the correct result in the end-to-end test, the generation of verilog (referred to as codegen) and verification of its correctness followed. However, this first XLS implementation failed to generate code due to multiple compiler errors present at the time of the development of the HiSparse XLS variant. The first limiting bug involved the flowing of tokens through match arms as indicated in Figure~\ref{tokenmatcharmbug}.
+
+\begin{figure}[H]
+\begin{lstlisting}[label={tokenmatcharmbug},caption={Example proc that failed to codegen due to tokens flowing through match arm results.}, captionpos=b,style=mystyle]
+pub proc example {
+    addr:       chan<u32> out;
+    pld:        chan<u32> in;
+    config(addr: chan<u32> out, pld: chan<u32> in) { (addr, pld) }    
+    init{(u32: 0, token())}
+    next (state: (u32, token)) {
+        match (state.0) {
+          u32:0 => {
+            let new_tok = send(state.1, addr, u32: 0);
+            let (new_tok, _) = recv(new_tok, pld);
+            (u32: 1, new_tok)
+          },
+          u32:1 => {
+            let new_tok = send(state.1, addr, u32: 0);
+            let (new_tok, _) = recv(new_tok, pld);
+            (u32: 2, new_tok)
+          },
+          _ => {
+            state
+          },
+        }
+    }
+}
+\end{lstlisting}
+\end{figure}
+
+XLS is a dataflow language with block style syntax, where values are returned at the ends of the blocks. Each match arm in Figure~\ref{tokenmatcharmbug} is a block deliniated by the curly brackets, and the return values of the block include a token due to the IO operations present. As mentioned previously, this token must be preserved to update the cross-activation token held in the proc's state to ensure IO operations are ordered across activations. Thus, IO operations had to be separated from the block representing the state to avoid flowing the tokens through match arms.
+
+The second limiting bug involved multiple IO operations per channel per activation. An activation is a single iteration of the logic contained in the \lstinline[style=mystyle]|next(){}| structure of a proc. If the logic involves multiple IO operations on a single channel (for example, multiple sends on a \lstinline[style=mystyle]|addr: chan<u32> out;| channel), a fifo must be described backing the channel in question. Should downstream connections exert backpressure on this latency sensitive streaming channel, the fifo will hold the multiple operations in the activation until the modules are ready again. However, the mechanism to describe fifos for these channels did not work, and the compiler continously errored due to the missing fifo instantaition. Figure~\ref{multipleiobug} provides an example proc incapable of codegen due to this bug.
+
+\begin{figure}[H]
+\begin{lstlisting}[label={multipleiobug},caption={Example proc that failed to codegen due to multiple operations per channel per activation. Note this proc is free of the previous tokens flowing through match arms bug.}, captionpos=b,style=mystyle]
+pub proc example {
+    addr:       chan<u32> out;
+    pld:        chan<u32> in;
+    config(addr: chan<u32> out, pld: chan<u32> in) { (addr, pld) }
+    init{(u32: 0, token())}
+    next (state: (u32, token)) {
+      let new_state = 
+      match (state.0) {
+        u32: 0 => { u32: 1 },
+        u32: 1 => { u32: 2},
+        _ => {state.0}
+      };
+      let new_tok = send_if(state.1, addr, state.0 == u32: 0, u32: 0);
+      let (new_tok, _) = recv_if(new_tok, pld, state.0 == u32: 0, u32: 0);
+      let new_tok = send_if(new_tok, addr, state.0 == u32: 1, u32: 0);
+      let (new_tok, _) = recv_if(new_tok, pld, state.0 == u32: 1, u32: 0);
+      (new_state, new_tok)
+    }
+}
+\end{lstlisting}
+\end{figure}
+
+As a consequence of this bug, state machines had to be modified to ensure only one IO operation on a channel was performed in the entire activation.
+
+The final bug effecting the development of the HiSparse variant was the inability to codegen parametric proc networks. Procs can instantiate other procs when being configured, and this quality was particularly useful given the nested, modular structure of the HiSparse architecture where kernels could contain multiple clusters, clusters contained multiple modules, and so on. However, this feature failed to work when cross activation tokens were present in the procs being instantiated, which encompassed practically all modules within the design. Though not changing the design of the HiSparse XLS variant, this bug greatlty slowed down develpment as codegen'd XLS procs had to be manually connected through hand-written verilog toplevel modules and other similar plumbing.
+
+\section{The Codegen Implementation}
+% taking all of the previous limitations into account, a framework was developed to sidestep the bugs and guarantee codegen capabilities...
