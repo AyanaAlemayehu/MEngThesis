@@ -7,11 +7,10 @@ The first attempt involved identifying the XLS features necessary to translate H
 Only a single match arm within the state machine is firing in a given activation, thus each state is self contained. Regarding the IO operations themselves, both regular sends and receives as well as conditional and nonblocking variants were used depending on the original modules behavior. Conditional sends and receives also reduced the number of states necessary by providing greater control over the active codepaths within a state. To ensure IO operations were ordered across multiple activations, cross-activation tokens\cite{xlsweb} (tokens that are included within a proc's state) were used as a basis for all IO operations.
 \begin{figure}[H]
 \begin{lstlisting}[label={idealmatrixloaderexample},caption={Initial design of the matrix loader. The initial state, streaming state, and cleanup state reside in separate match arms}, captionpos=b,style=mystyle]
-pub proc matrix_loader<STREAMS_PER_CLUSTER: u32>{
+pub proc matrix_loader<STREAMS: u32>{
     addr:                   chan<u32> out;
-    payload:                chan<uN[64][STREAMS_PER_CLUSTER]> in;
-
-    output:                 chan<uN[64]>[STREAMS_PER_CLUSTER] out;
+    payload:                chan<uN[64][STREAMS]> in;
+    output:                 chan<uN[64]>[STREAMS] out;
     
     // ...
 
@@ -29,7 +28,7 @@ pub proc matrix_loader<STREAMS_PER_CLUSTER: u32>{
                 let new_tok = send(state.10, addr, state.1);
                 let (new_tok, custom_matrix_format_payload) = recv(state.10, payload);
                 // process custom matrix format...
-                for (stream_idx) : (u32) in u32:0..STREAMS_PER_CLUSTER {
+                for (stream_idx) : (u32) in u32:0..STREAMS {
                     let new_tok = send(state.10, output[stream_idx], COO_output_payload);
                 } // ...
                 // update state...
@@ -114,3 +113,68 @@ The final bug effecting the development of the HiSparse variant was the inabilit
 
 \section{The Codegen Implementation}
 % taking all of the previous limitations into account, a framework was developed to sidestep the bugs and guarantee codegen capabilities...
+Taking all of the previous limitations into account, a framework was developed to avoid the aformentioned bugs and guarantee codegen capabilities. Figure~\ref{matrixloaderconservativeexample} shows the previous abridged matrix loader modified to conform to this new framework.
+
+\begin{figure}[H]
+\begin{lstlisting}[label={matrixloaderconservativeexample},caption={First codegen design of the matrix loader. The stages of a substate are indicated in comments.}, captionpos=b,style=mystyle]
+pub proc matrix_loader<STREAMS: u32>{
+    // ...
+    next (state: ...) {
+        // Stage 1: boolean generation
+        let (tx_addr, tx_out, rx_pld) =
+        match (state.0) {
+            u32: 0 => {(true, false, false)},
+            u32: 1 => {(false, false, true)},
+            u32: 2 => {(false, true, false)},
+            _ => {(false, false, false)}
+        }
+        // Stage 2: Send payload generation
+        let (addr_pld, out_pld) =
+        match (state.0) {
+            u32: 0 => {(state.1, zero!<uN[STREAMS][96]>())},
+            u32: 1 => {(u32: 0, state.2)},
+            _ => {u32: 0, zero!<uN[STREAMS][96]>()}
+        }
+        // Stage 3: IO firing
+        let t1 = send_if(state.2, addr, tx_addr, addr_pld);
+        let t2 = send_if(state.2, output, tx_out, out_pld);
+        let t3 = recv_if(state.2, payload, rx_pld, zero!<uN[STREAMS][64]>());
+        let new_tok = join(t1, t2, t3);
+        // Stage 4: State update
+        let new_state =
+        match (state.0) {
+            // state transition logic...
+        };
+    }
+}
+\end{lstlisting}
+\end{figure}
+
+% why split states into a single IO operation direction? because only a single reference to the IO operations was supported, thus the most parallelism i could guarantee was all of the same direction firing at once.
+
+In the conservative framework, all proc state machines were refactored to ensure at most one direction of IO operation was performed per activation. Thus if a state within a proc's state machine originally performed (in order) a send, a receive, and two subsequent sends, these IO operations were later grouped into three smaller "sub-states" of send, receive, and the final two sends. If IO operations shared the same direction and original token, i.e., they were meant to occur simultaneously, then these IO operations resided in the same sub-state. Alternating send and receive patterns multiplied the number of states within a module, and in Figure~\ref{matrixloaderconservativeexample}, the initialization state was broken into 4 sub-states as a result of this transformation. Using this approach allowed for a single conditional IO operation per channel that only needed to be ordered with respect to the cross-activation token in the proc's state. 
+
+The rest of the framework works around this restriction to progress through the original state machines logic. The logic of a sub-state is spread apart into four sequential stages (also numbered in Figure~\ref{matrixloaderconservativeexample}):
+
+\begin{enumerate}
+    \item The generation of the booleans to trigger the conditional IO operations
+    \item The generation of send payloads
+    \item The firing of the conditional IO operations
+    \item The determination of future state based upon current state and received payloads
+\end{enumerate}
+
+With this conservative framework, the first successful codegen of the HiSparse XLS variant was achieved. Though some modifications had to be made to the state variables stored in each proc, particularly to carry over received values from previous sub-states to future sub-states, the implementation of this framework across all HiSparse XLS modules was straightforward.
+
+% talk about how XLS does throughput.
+% go through how the matrix loader must receive and send in its streaming, which when synthesized into a pipeline will take at least 2 cycles. 
+% then talk about there being more severe pathways causing delays, such as the receive from arbiter, send to sfcore, receive from sfcore, send to output that guarantees 4 cycle II.
+
+However, due to the multiplication of states as a result of the IO operation restriction, the throughput of the overall design suffered greatly. The initiation interval (II) of a proc, specified during the codegen process, refers to the number of cycles per proc activation. Ideally each state could execute in its entirety within a single activation. However, many states exercised the same fundamental execution path of receiving a payload, performing a computation on the received data, and sending the computed result downstream. The IO operation restriction ensured this execution path could only operate at an II of two cycles or more. Modules like the abridged matrix loader were limited to this two cycle II, whereas other modules had more drastic throughput limitations. The shuffler core must receive data from the arbiter, \textit{conditionally} receive data from the input stream (determined by the previous arbiter payload), send data into the arbiter, and finally send data to the output stream, leading to an II of 4 that doesnt include the worsened performance of the shuffler wrapping the shuffler core's inputs and outputs.
+
+Given these performance limitations, a more optimized framework was developed with consulation from the language creators to achieve full streaming throughput. % <--- ????????? how do i give credit that this wasnt entirely my idea (i did not discover/acknowledge the blocking frontier concept but I did flush it out and make it usable) 
+
+\section{The Optimized Implementation} % perhaps mention that this is the streaming optimized implementation
+
+% below is for optimized imp where I mention that aside from codegen problems, there is a more core reason as to why this design is limiting through blocking frontiers, which I got from consulting the creators.
+% finally explain the concept of blocking frontiers occuring regardless of if this was codegennable in the ideal case that would again literally cause 2 cycle delay
+% mention that this is a hybrid approach of the codegen implementation with new blocking frontier considerations
