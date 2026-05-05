@@ -1,4 +1,5 @@
 \chapter{Implementation}
+\setstretch{1}
 Implementing a correct and streaming optimized HiSparse variant in XLS involved multiple approaches due to existing bugs in the compiling toolchain and code generation peclularities that limited throughput in certain scenarios. Split into three attempts, the first encapsulates a "naive" approach that purely translates HiSparse's logic into XLS and fails to generate verilog. The second attempt addresses the code generation failures of the first through a conservative design framework. The third and final attempt modifies the HiSparse architecture to reduce the throughput penalties of the conservative framework, leading to a full streaming throughput design.
 
 \section{The Naive Implementation}
@@ -190,7 +191,7 @@ However, despite the logic in a proc's \lstinline[style=mystyle]|next(){}| struc
 
 % maybe a figure showing how this  plays out?
 \begin{figure}[H]
-\centering\includegraphics[alt={sample image},width=6.67cm]{channelmux.png} 
+\centering\includegraphics[alt={sample image},width=10cm]{channelmux.png} 
 \caption[Channel Multiplexing]{Example of channel multiplexing on the matrix loader.}\label{procmuxes}
 \end{figure}
 

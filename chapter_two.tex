@@ -1,9 +1,8 @@
-\chapter{Background}
+\chapter{Background and Related Work}
+\setstretch{1}
 % probably talk about what is SpMV anyway as well, and the family of operations
-\section[XLS Overview]{What is XLS?}
-XLS, standing for Accelerated Hardware Synthesis, is a development toolchain capable of generating both software and hardware designs from code written in either of its languages: XLScc and DSLX. This flexibility aims to address the growing need of specialized hardware to realize performance gains, enabling users to offload software computations to hardware at their choosing \cite{xlsweb}. XLScc is embedded in C++ and DSLX, 
-% bad wording: can i say that?
-the language of focus, is their domain specific language.
+\section[XLS Overview]{XLS}
+XLS stands for Accelerated Hardware Synthesis, and is a development toolchain capable of generating both software and hardware designs from code written in either of its languages: XLScc and DSLX. This flexibility aims to address the growing need of specialized hardware to realize performance gains, enabling users to offload software computations to hardware at their choosing \cite{xlsweb}. XLScc is embedded in C++ and DSLX, the language of focus for this work, is their domain specific hardware description language (HDL).
 
 DSLX provides two functional primitives to describe computations: funcs and procs. Funcs are stateless functions that return a value.
 \begin{lstlisting}[caption=An example func, captionpos=b, style=mystyle]
@@ -12,7 +11,12 @@ fn mul_add(a: u32, b: u32, c: u32) -> {
     (d)
 }
 \end{lstlisting}
-Procs, standing for Communicating Sequential Processes, are stateful modules capable of communicating with one another using directional channels. The model of communication is based upon Kahn Process Networks, where IO operations, such as sends and receives, produce tokens that can be used to order operations with respect to one another. 
+% talk more about Kahn process networks, describe them as a message passing model lowerable to hardware (and perhaps that such ordering constraints make it easier to reason about dependencies instead of dealing with more difficult to reason systemverilog that doesnt describe the relationship between things as well), draw mul_add as a Kahn Process Network
+
+Procs, standing for Communicating Sequential Processes, are stateful modules capable of communicating with one another using directional channels. Their model of communication is based upon Kahn Process Networks (KPNs) \cite{kahnprocessnetwork}, a graphical model for describing the flow of computations within a distributed network of processes. Kahn Process Networks consist of processes, channels, and tokens. Processes must obtain a token before sending data to downstream processes. This token may be received from upstream channels or spawned by the process itself. As a result, tokens serve as a mechanism to order operations across processes, and XLS likewise uses tokens to control when send and receive operations fire within a proc.
+
+Kahn Process Networks, and XLS in turn, model channels as infinite depth FIFO queues with non-blocking sends (i.e. they always succeed) and blocking receives. When lowering processes to hardware, XLS translates these channels into latency insensitive connections with blocking, ready valid interfaces on both the sender and receiver. By adhering to pure KPN semantics, procs avoid timing hazard bugs, where the output of the computation is dependent on the execution time of IO operations. However, KPN semantics alone do not support the full breadth of possible hardware designs, such as a module that must arbitrate access to a bus between multiple inputs. For these scenarios, XLS offers non-KPN operations such as \lstinline[style=mystyle]|recv_non_blocking| to allow for latency sensitive designs. The use of these non-KPN operations re-introduces the possibility for timing hazards.
+
 \begin{lstlisting}[caption=An example proc. join() produces a new token useful for ordering IO operations \textit{after} all the tokens in its parameter list, captionpos=b, style=mystyle]
 proc mul_add{
     a:      chan<u32> in;
@@ -33,9 +37,21 @@ proc mul_add{
     }
 }
 \end{lstlisting}
+
+% figure of KPN graph of above proc
+% the figure displaying the muladd as a kahn process network will also mention that the edges of the graph are 1:1 with the channels, with left edges as in channels and right edges as out channels.
+\begin{figure}[H]
+\centering\includegraphics[alt={sample image},width=6.67cm]{kpn.png} 
+\caption[Kahn Process Network]{KPN depiction of above proc. Dotted circles represent other procs in the network, arrows represent channels. The mul\_add proc would activate only once tokens were received from channels a, b and c.}
+\end{figure}
+
 DSLX generates hardware by lowering the encoded logic into SystemVerilog modules. The pipelines and state machines generated can be additionally configured through compilation flags.
 
 A further introduction to DSLX programming can be found on the XLS website.
+
+% Now bring up Anvil as a separate section and a separate communication model
+\section{Anvil}
+Anvil \cite{anvil} is an HDL that uses an alternative approach to order operations and address timing hazard bugs. Rather than use latency insensitive blocking connections, Anvil's channels make use of timing contracts that specify through an event based interval when transactions may occur over a channel. Events within a timing contract may be defined statically as a set number of cycles, or defined dynamically based upon the asynchronus setting of a wire. These timing contracts are described within the declaration of the channel and are statically checked at compile time across module connections to ensure correctness with respect to timing hazards.
 
 % do i talk about XLS inspirations (Handel-C) and/or compare XLS to existing programming languages?
 \section[Sparse Matrix Computations]{Sparse Matrix Computations} % should i just combine this with hisparse, i am litearlly just going to say SpMV means sparse matrix which means many zeros lol
@@ -43,12 +59,12 @@ A further introduction to DSLX programming can be found on the XLS website.
 Sparse matrix computations are a family of matrix operations where many elements of the input matrix are zeros. The operations are often denoted in shorthand with "Sp" highlighting which matrix is sparse in the notation, thus SpMSpM and SpMV indicates a sparse matrix-matrix and sparse matrix-vector operation respectively. As the zeros of the sparse matrix can be trivially ignored when computing the result of the operation, traditional dense algorithms waste both compute resources and useful memory bandwidth when applied to sparse workloads. By instead tailoring the software and/or hardware design for these sparse workloads, performance exceeding a dense computation can be achieved.
 
 % CSR, CSC, COO
-Often the storage format of the matrix is optimized to address its sparsity. Compressed Sparse Row (CSR) is a common sparse matrix storage format where a traditional two dimensional array representing the matrix is replaced with three arrays: a value array containing the non-zero matrix elements, a column array containing the column indicies of the elements, and a monotonically increasing row array encoding the row indices of the elements. Unlike the column array, the row array is not the direct row indices of the elements.
+Often the storage format of the matrix is optimized to address its sparsity. The Compressed Sparse Row (CSR) format, depicted in Figure~\ref{spmv1csr}, is a common sparse matrix storage format where a traditional two dimensional array representing the matrix is replaced with three arrays: a value array containing the non-zero matrix elements, a column array containing the column indicies of the elements, and a monotonically increasing row array encoding the row indices of the elements. Unlike the column array, the row array is not the direct row indices of the elements.
 % bad wording: below (maybe?)
 In other words, it is not the same length as the value array. Instead, the values of the row array represent the index ranges of the value array that reside on a particular row. 
 % perhaps figure, perhaps not. Though, i could use a figure to make a worked example with my spmv1.json, showing the changes that HiSparse's format provides and establishing familiarity with the reader.
-\begin{figure}[h]
-\centering\includegraphics[alt={sample image},width=10cm]{spmv1csr.PNG} 
+\begin{figure}[H]
+\centering\includegraphics[alt={sample image},width=15cm]{spmv1csr.PNG} 
 \caption[Example CSR Matrix]{Example matrix encoded in CSR format}\label{spmv1csr}
 \end{figure}
 A row array of the form \lstinline|[0, 2, 2, ...]| implies that within the value array, elements 0 and 1 reside on the first row, no elements reside on the second row, and so on. Each successive value in the row array represents the end of the index range of the next row in the matrix. As the name implies, this row array is ideally compressed compared to a simpler direct encoding of the indicies when the input matrix holds many empty rows. Its mirror form, Compressed Sparse Column (CSC), performs the same compression on the column indices of the matrix. Finally, simply storing the value array, and the column and row array in their non-compressed direct encoding results in the Coordinate (COO) storage format.
@@ -56,7 +72,7 @@ A row array of the form \lstinline|[0, 2, 2, ...]| implies that within the value
 % is ther innovation on both the storage format as well as the multiplication?
 
 % Existing sparse architectures (nvidia 4:2, ExTensor, GPU vs FPGA?)? Perhaps end with HiSparse, "a SpMV arch used as a case study in this askdoasda" lol
-Many current workloads involve sparse matrix computations, and correspondingly there are many options for sparse accelerators within academic and commercial spaces; Introduced in their Ampere architecture, Nvidia's Tensor Cores support full throughput on 2:4 sparse matrices (2:4 implies that for every 4 successive matrix elements, 2 are zeros)\cite{nvidia24}. ExTensor, a generalized sparse tensor accelerator, uses intersections to determine not only when to perform operations between scalars, but also whether to operate on larger granularities such as entire tensors \cite{extensor}. HiSparse, the SpMV accelerator used as a case study for this work, implements its logic in Vitis HLS to show modern high level synthesis capabilities \cite{hisparse}. A further analysis of the HiSparse architecture is provided in the following section.
+Many current workloads involve sparse matrix computations, and correspondingly there are many options for sparse accelerators within academic and commercial spaces; Introduced in their Ampere architecture, Nvidia's Tensor Cores support full throughput on 2:4 sparse matrices (2:4 implies that for every 4 successive matrix elements, 2 are zeros)\cite{nvidia24}. ExTensor, a generalized sparse tensor accelerator, uses intersections to determine not only when to perform operations between scalars, but also whether to operate on larger granularities such as entire tensors \cite{extensor}. HiSparse, the SpMV accelerator used as a case study for this work, implements its logic in Vitis HLS to show modern high level synthesis capabilities on the often dynamic workloads present in sparse computaitons \cite{hisparse}. A further analysis of the HiSparse architecture is provided in the following section.
 
 \section[HiSparse Architecure Overview]{HiSparse Architecture Overview}
 HiSparse is a modular FPGA based SpMV accelerator written entirely in Vitis HLS. Expressing dynamic operations such as payload arbitration alongside typical latency insensitive pipeline synthesis, it broadens the idea of what is possible with high level synthesis and likewise serves as an appropriate case study for identifying the capabilities of a hardware focused language. There are slight variations between the integral and floating point version of the architecture, and this overview will focus on the integral version. However, much of the architecture remains the same for the floating point version.
@@ -65,7 +81,7 @@ HiSparse is a multi-kernel architecture capable of spanning across chip die boun
 
 % perhaps figure of the high level split kernel architecture
 \begin{figure}[H]
-\centering\includegraphics[alt={sample image},width=10cm]{splitkernel.png} 
+\centering\includegraphics[alt={sample image},width=13cm]{splitkernel.png} 
 % option argument of caption suppress citation hyperlink in table of contents by using \CiteNolink rather than \cite
 \caption[Split Kernel Diagram~\CiteNolink{hisparse}.]{Example three kernel HiSparse architecture~\cite{hisparse}.}\label{splitkerneldiagram}
 \end{figure}
@@ -74,7 +90,7 @@ HiSparse is a multi-kernel architecture capable of spanning across chip die boun
 Within the kernel lies one or more clusters, serving as the smallest mostly complete computation units that compute on a row-by-row basis; Clusters are capable of requesting matrix data, caching input vector data, computing output vector updates and streaming the final row results out. The internal cluster datapath is comprised of multiple streams running in parallel, each stream computing the results of one or more output vector elements. Streams are numbered successively, and the stream number corresponds to the row a stream will iterate over modulo the number of streams. Thus if there are N streams, the first stream will iterate over the first row of the matrix, then it will iterate over the N+1 row of the matrix, and so on. All clusters have the same number of streams, and the streams of a cluster are grouped into structures called channels at the input of the cluster. Figure~\ref{clusterdiagram} highlights the modules each cluster contains to perform its computations.
 % figure of the cluster architecture
 \begin{figure}[H]
-\centering\includegraphics[alt={sample image},width=10cm]{cluster.PNG} 
+\centering\includegraphics[alt={sample image},width=13cm]{cluster.PNG} 
 \caption[Cluster Diagram~\CiteNolink{hisparse}.]{Cluster diagram~\cite{hisparse}.}\label{clusterdiagram}
 \end{figure}
 
@@ -94,8 +110,8 @@ HiSparse introduces a modified version of the CSR sparse matrix format to addres
 HiSparse replaces the functionality of the row array with tokens in the data and column index arrays to communicate row changes. A token consists of a skip row indicator (represented as a -1 in the column index array) paired with an integer in the data array representing the number of rows to skip. The skip row indicator ensures downstream modules do not treat the data and column pair as valid matrix information, and the integer enables a single token to skip an arbitrary number of rows, rather than the element by element traversal necessary in the CSR row array.
 
 \begin{figure}[H]
-\centering\includegraphics[alt={sample image},width=10cm]{spmv1cpsrexample.PNG} 
-\caption[Hisparse Matrix Format]{The previous CSR example expressed in HiSparse's custom format, using two streams and vector and output banks of size 2. This results in four total partitions, two column partitions per row partition.}\label{cpsrexample}
+\centering\includegraphics[alt={sample image},width=13cm]{spmv1cpsrexample.PNG} 
+\caption[Hisparse Matrix Format]{The previous CSR example expressed in HiSparse's custom format, using two streams, and vector and output banks of size 2. This results in four total partitions, two column partitions per row partition.}\label{cpsrexample}
 \end{figure}
 A data and column pair comprises a single payload for a single stream. As mentioned in the previous section, clusters are comprised of one or more streams grouped into channels at the input. Thus, a single channel payload is comprised of one or more stream payloads. These packed channel payloads represent the data type that is read from memory. Consequently, they impose restrictions on the shape of the input matrix; The number of rows of the input matrix must be cleanly divisible by the total number of streams in the entire design, and the number of columns of the input matrix must be cleanly divisible by the number of streams in a cluster. Both requirements ensure there are no memory out of bounds accesses when all of the clusters simultaneously request the packed payloads of matrix and vector data at any moment. Vector data is packed in a similar manner to matrix stream data, however, there is no use of tokens as the vector is one dimensional.
 
@@ -112,7 +128,7 @@ After grabbing the metadata for a partition, the matrix loader sends a Start of 
 Once the matrix loader reads all of the channel payloads of a given partition, it will send an End of Data (EOD) command payload to its output streams. Should it have completed the final column partition of the entire row, it will also send an End of Stream (EOS) command payload. Thus, the matrix loader is also tasked with the creation of these stream command payloads for the rest of the cluster datapath to synchronize their computations with. Figure~\ref{matrixloaderexample} provides an example of the matrix loader processing a partition from Figure~\ref{cpsrexample}.
 % i need a figure ngl
 \begin{figure}[H]
-\centering\includegraphics[alt={sample image},width=6.67cm]{matrix_loader.png} 
+\centering\includegraphics[alt={sample image},width=10cm]{matrix_loader.png} 
 \caption[Matrix Loader]{Matrix loader output after processing the final column partition of the first row in Figure~\ref{cpsrexample}. Note the creation of the SOD, EOD and EOS stream commands.}\label{matrixloaderexample}
 \end{figure}
 % overall lets track the payload types since that is quite clear in the importance of each module and what transformations it performs
