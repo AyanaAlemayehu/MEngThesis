@@ -1,9 +1,10 @@
 \chapter{Implementation}
-\setstretch{1}
+\setstretch{1.5}
+
 Implementing a correct and streaming optimized HiSparse variant in XLS involved multiple approaches due to existing bugs in the compiling toolchain and code generation peclularities that limited throughput in certain scenarios. Split into three attempts, the first encapsulates a "naive" approach that purely translates HiSparse's logic into XLS and fails to generate verilog. The second attempt addresses the code generation failures of the first through a conservative design framework. The third and final attempt modifies the HiSparse architecture to reduce the throughput penalties of the conservative framework, leading to a full streaming throughput design.
 
 \section{The Naive Implementation}
-The first attempt involved identifying the XLS features necessary to translate HiSparse's logic. At a high level, procs were used in almost all module implementations due to the prevalence of latency insensitive AXI4-Stream connections in the original Vitis HLS implementation. These stream connections can be directly expressed through XLS' streaming channels. Procs also easily supported a state machine structure within their activation to reason about the prologue, streaming, and epilogue behavior of each module, grouping like operations together under a single thematic state. Figure ~\ref{idealmatrixloaderexample} shows an abridged version of the first matrix loader implementation. 
+The first attempt involved identifying the XLS features necessary to translate HiSparse's logic. At a high level, procs were used in almost all module implementations due to the prevalence of latency insensitive AXI4-Stream connections in the original Vitis HLS implementation. These stream connections can be directly expressed through XLS' streaming channels. Procs also easily supported a state machine structure within their activation to reason about the initialization, streaming, and cleanup behavior of each module, grouping like operations together under a single thematic state. Figure ~\ref{idealmatrixloaderexample} shows an abridged version of the first matrix loader implementation. 
 
 Only a single match arm within the state machine is firing in a given activation, thus each state is self contained. Regarding the IO operations themselves, both regular sends and receives as well as conditional and nonblocking variants were used depending on the original modules behavior. Conditional sends and receives also reduced the number of states necessary by providing greater control over the active codepaths within a state. To ensure IO operations were ordered across multiple activations, cross-activation tokens\cite{xlsweb} (tokens that are included within a proc's state) were used as a basis for all IO operations.
 \begin{figure}[H]
@@ -52,7 +53,7 @@ Each module was tested both individually for correctness and in larger scale int
 
 After achieving the correct result in the end-to-end test, the generation of verilog (referred to as codegen) and verification of its correctness followed. However, this first XLS implementation failed to generate code due to multiple compiler errors present at the time of the development of the HiSparse XLS variant. The first limiting bug involved the flowing of tokens through match arms as indicated in Figure~\ref{tokenmatcharmbug}.
 
-\begin{figure}[H]
+\begin{figure}[ht]
 \begin{lstlisting}[label={tokenmatcharmbug},caption={Example proc that failed to codegen due to tokens flowing through match arm results.}, captionpos=b,style=mystyle]
 pub proc example {
     addr:       chan<u32> out;
@@ -80,11 +81,11 @@ pub proc example {
 \end{lstlisting}
 \end{figure}
 
-XLS is a dataflow language with block style syntax, where values are returned at the ends of the blocks. Each match arm in Figure~\ref{tokenmatcharmbug} is a block deliniated by the curly brackets, and the return values of the block include a token due to the IO operations present. As mentioned previously, this token must be preserved to update the cross-activation token held in the proc's state to ensure IO operations are ordered across activations. Thus, IO operations had to be separated from the block representing the state to avoid flowing the tokens through match arms.
+XLS is a dataflow language with block style syntax, where values are returned at the ends of the blocks. Each match arm in Figure~\ref{tokenmatcharmbug} is a block deliniated by the curly brackets, and the return values of the block include a token due to the IO operations present. As mentioned previously, this token must be preserved to update the cross-activation token held in the proc's state to ensure IO operations are ordered across activations. Thus, IO operations had to be separated from the block representing the state to avoid flowing the tokens through match arms and preserve the tokens.
 
 The second limiting bug involved multiple IO operations per channel per activation. An activation is a single iteration of the logic contained in the \lstinline[style=mystyle]|next(){}| structure of a proc. If the logic involves multiple IO operations on a single channel (for example, multiple sends on a \lstinline[style=mystyle]|addr: chan<u32> out;| channel), a fifo must be described backing the channel in question. This fifo could be used when multiple IO operations contend for the same channel when activations are overlapped with one another, or when downstream connections exert backpressure on a streaming channel and pending operations must be queued until the downstream connection is ready again. However, the mechanism to describe fifos for these channels did not work, and the compiler continously errored due to the missing fifo instantaition. Figure~\ref{multipleiobug} provides an example proc incapable of codegen due to this bug.
 
-\begin{figure}[H]
+\begin{figure}[ht]
 \begin{lstlisting}[label={multipleiobug},caption={Example proc that failed to codegen due to multiple operations per channel per activation. Note this proc is free of the previous tokens flowing through match arms bug.}, captionpos=b,style=mystyle]
 pub proc example {
     addr:       chan<u32> out;
@@ -190,7 +191,7 @@ As mentioned previously, part of the impetus for the conservative framework was 
 However, despite the logic in a proc's \lstinline[style=mystyle]|next(){}| structure encoding multiple IO operations per channel, the IO operations resided in separate stages of the state machine and at any given activation only a single IO operation could occur on the channel. Using this fact, multiple channels were created that inherently referred to the same channel, and a multiplexing proc combined these channel references into a unified channel for both sends and receives. It must be noted that this workaround is very similar to a future update provided in the XLS compilation flow that was not available at the time of development \cite{xlsweb}.
 
 % maybe a figure showing how this  plays out?
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image},width=10cm]{channelmux.png} 
 \caption[Channel Multiplexing]{Example of channel multiplexing on the matrix loader.}\label{procmuxes}
 \end{figure}
@@ -213,7 +214,7 @@ Apart from the previously mentioned compiler bugs leading to decreased throughpu
 Frontier splitting involves creating two procs for each identified blocking frontier. Figure~\ref{blockingfrontier} displays this technique for the channel multiplexed matrix loader. During streaming, the matrix loader will send a memory request, receive a payload, and send a modified payload downstream. Though the channel multiplexing technique ensures this path executes in a single activation (as the initialization, streaming and cleanup channel references are separate), a pipeline stage will be inserted during codegen between the sending of the memory request and receiving of the payload. Using frontier splitting, this path is split into two procs, one responsible for the creation of the memory requests, labelled ml\_send, and another responsible for the handling of received payloads and sending of computed results downstream, labelled ml\_recv.
 
 % the figure
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image},width=10cm]{blocking_frontier.png} 
 \caption[Blocking Frontier]{Diagram of streaming optimized matrix loader using frontier splitting technique. ml\_send pipelines metadata alongside memory requests, and ml\_recv computes updates based upon the combined metadata and memory data.}\label{blockingfrontier}
 \end{figure}

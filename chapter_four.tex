@@ -1,5 +1,5 @@
 \chapter{Evaluation}
-\setstretch{1}
+\setstretch{1.5}
 
 The evaluation of the HiSparse XLS Implementation was done in multiple phases. As mentioned previously, some testing for correctness was first done before codegen through the use of XLS' test proc infrastructure. After codegen was achieved, simulation of the generated verilog was done with handwritten top-level files and driven by Cocotb \cite{cocotb} coroutines with Verilator \cite{verilator} as the backend simulator. Surfer \cite{surfer}, an open-source waveform viewer, was used to visually analyze the performance of the design. The Cocotb-Verilator-Surfer evaluation flow was used from the first codegen achieved until full throughput streaming was realized. Finally, a small verilog driver was written alongside BRAM wrappers for memory requests to prepare the design for deployment onto an FPGA. For all evaluation phases, the single kernel, single cluster, two stream HiSparse architecture was used with input vector and output vector bank sizes of 2. %frequency optimization was not done on the FPGA, future work
 
@@ -16,7 +16,7 @@ Input matrices, described in JSON files with metadata, were read by custom pytho
 
 When the previously monolithic proc implementations were split across blocking frontiers into send and receive procs, any ready backpressure from the receive proc must be routed upwards towards the send proc to ensure the send proc pauses iteration. Combinational ready connections were simulated within the Cocotb drivers to simulate this backpressure, which also required the ordering of reads and writes within the Cocotb driver code to ensure correctness with regards to Cocotb's timing model \cite{cocotb}. Figure~\ref{cocotbtimingmodel} displays the phases of a given Cocotb simulation time step in the timing model. To ensure a write observed up to date data, an arbitrary number of HDL Evaluation -> Values Changed loops were waited upon before sampling wire values, while other writes and reads executed after a lesser number of iterations of said loop. This difference in loop iterations established an order between wire reads and writes and ensured wire connections settled into correct values.
 
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image},width=15cm]{phasestimingmodel.png} 
 \caption[Cocotb Timing Model Phases~\CiteNolink{cocotb}.]{Phases of a time step in Cocotb's Timing Model~\cite{cocotb}.}\label{cocotbtimingmodel}
 \end{figure}
@@ -37,12 +37,12 @@ Table~\ref{cycleres} displays the number of cycles used to calculate the SpMV re
 
 Inbetween the two shuffle units is the vector buffer access unit, whose optimization saved 136 cycles. The vector buffer access unit only had a single blocking frontier and was a relatively simple state machine originally, explaining the modest speed increase. Finally, the optimization of the processing engine resulted in the final 155 cycles saved and represents the full streaming throughput design. Like the shuffle unit, the processing engine required multiple activations for each incoming payload due to the multiple states necessary for its acccumulation. Thus its streaming optimized variant saved a few more cycles than the vector buffer access unit.
 
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image}, width=6.67cm]{input_matrix.png}
     \caption[Benchmark Matrix and Vector]{Matrix and vector used to benchmark each codegen capable HiSparse version. The four column partitions are highlighted in different colors, and each stream is its own shade of the partition's color.}\label{inputmatrix}
 \end{figure}
 
-\begin{table}[H]
+\begin{table}[ht]
 \centering
 \begin{tabular}{|l|r|r|}
 \hline
@@ -58,7 +58,7 @@ Optimized Processing Engine & 237 & 65\% \\ \hline
 \end{table}
 
 % figure of the first partition of the matrix loader, show
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image}, width=10cm]{optimized_matrix_loader.png}
     \caption[Matrix Loader Waveform Diagram]{Comparison of the streaming performance between the monolithic and split-proc versions of the matrix loader. At the top, each valid address is separated by multiple unused cycles due to the conservative state machine as well as the generated pipeline stages from the blocking frontier. At the bottom, multiple addresses are communicated without empty cycles inbetween, highlighting the full throughput streaming performance of the optimized matrix loader.}\label{optimizedmatrixloader}
 \end{figure}
@@ -94,14 +94,12 @@ To ensure the design was running properly, AXI GPIO IP blocks \cite{axigpio} wer
 
 The target frequency during synthesis was 100 Mhz. The design originally failed to meet this timing requirement and required two modificaitons along the critical path. The first involved a result draining module that performed a 32 bit modulo to accumulate results across all kernels and clusters. Since the design is a single kernel, single cluster variant with two streams, the bit width of the modulo's inputs could be easily reduced to meet timing without any practical loss of performance. However, the second offending path involved the processing engines multiply accumulate. Figure~\ref{timingreport} displays a setup timing report of an example offending path.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image}, width=\linewidth]{timingreport.png}
     \caption[Timing Report]{The timing report of the processing engine critical path. }\label{timingreport}
 \end{figure}
 
 Analyzing the path's timing, it arrives at the clock edge at 14.830ns while its required time is 12.749ns, consequently overshooting the requirement by 2.081ns. A substantial amount of the timing delay is the result of high fanout clock nets. However, in the middle of the timing report lies two DSP48E1 blocks \cite{dsp48} in succession. The DSP48E1 is a primitive used within the Programming Logic (PL) fabric to perform the multiply accumulate operation. As the processing engine performs a multiply accumulate, it is reasonable that vivado inferred its use. However, the DSP48E1 accepts a 25 bit and 18 bit twos complement input respectively for its multiplication operation. The original processing engine implementation performed a 32bitx32bit signed multiplication ideally within a cycle (under full throughput streaming operation). To support a higher bitwidth on both ports, multiple DSP48E1 blocks must be connected together in a hierarchal fashion, and consequently two of these DSPs end up being connected in succession. These successive DSPs contributed 6.53ns of delay, with the second DSP contributing 2.438ns. Thus allowing the matrix and vector elements to be 32 bit led to negative slack violations, and the removal of the second DSP would make the design achieve the timing requirements.
-
-Reducing the bitwidth of the matrix and vector elements to 18 bits resulted in the design achieving the timing constraints and producing the correct output as it could fit in a single DSP48E1. Figure~\ref{singlelinemodification} displays this simple modification. Though technically one of the operands can be 25bits and still fit within the DSP, XLS did not support asymmetrical bitwidths during multiplication, hence both operands are 18 bits. This modificaiton affects performance by hurting the dynamic range of the design, though it enables its operation at 100 Mhz on the Zynq-7000 SoC.
 
 \begin{figure}[H]
 \begin{lstlisting}[label={singlelinemodification},caption={Single line modification necessary to acheive 100Mhz. Multipy inputs wrapped with s18 casts. Accumulation with the 32bit increment is still supported as the DSP48E1 supports up to 48 bit accumulation}, captionpos=b,style=mystyle]
@@ -113,6 +111,8 @@ pub proc pe_recv {
 \end{lstlisting}
 \end{figure}
 
+Reducing the bitwidth of the matrix and vector elements to 18 bits resulted in the design achieving the timing constraints and producing the correct output as it could fit in a single DSP48E1. Figure~\ref{singlelinemodification} displays this simple modification. Though technically one of the operands can be 25bits and still fit within the DSP, XLS did not support asymmetrical bitwidths during multiplication, hence both operands are 18 bits. This modificaiton affects performance by hurting the dynamic range of the design, though it enables its operation at 100 Mhz on the Zynq-7000 SoC. An alternative approach of breaking the 32bit multiply into parallel, smaller bit multiplications fails to meet timing due to an inability to introduce registers between intermediate results using XLS' current syntax.
+
 % analyze the timing report. Why is there high fanout? The mult DSP itself supports 600 Mhz, why is it failing here? why is the path so long?
 
 % do i ask chris if there is a way to break up the signed multiply into multiple stages?
@@ -121,12 +121,12 @@ pub proc pe_recv {
 % modifications necessary to make timing at 100 mhz
 % current critical paths and their analysis (its still the 16 bit multiply i think but take a look at the other paths)
 
-\begin{figure}[H]
+\begin{figure}[ht]
 \centering\includegraphics[alt={sample image}, width=\linewidth]{single_cluster_rtl_synthesized_design.png}
     \caption[Design Floorplanning]{Synthesized design floorplanning. Blocks highlighted in purple represent the logic encoding the HiSparse architecture. Blocks highlighted in blue represent the BRAMs used by the HiSparse modules. All other logic (processing system, GPIO, etc) is highlighted in yellow.}\label{synthdesign}
 \end{figure}
 
-\begin{table}[H]
+\begin{table}[ht]
 \centering
 \begin{tabular}{|l|r|r|r|r|r|}
 \hline

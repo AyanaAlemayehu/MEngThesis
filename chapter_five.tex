@@ -1,0 +1,29 @@
+\chapter{Conclusion}
+
+We present a variant of the HiSparse SpMV architecture written entirely in XLS. Through the 
+
+% strict contributions....................
+ 
+% what does it mean to conclude this work. 
+
+% we present a variant of HiSparse written in XLS
+
+% we show the design tradeoffs necessary to achieve performance and the current state of development
+
+\section{Discussion}
+
+% discussion................
+
+% as a discussion, I think XLS provides some noticable speedup and its integrated testing environment is good for fist pass confidence in correctness while avoiding overhead of making testbench
+
+% however, there needs to be earlier warning of codegen capabilities mismatching with testing capabilities. I.e. I should not be able to simulate while actually not being able to codegen
+
+% likewise, the inability to specify the cycle of operations during scheduling makes it hard to influence the scheduler internaly if say the delay model isnt perfect (such as how I only have ASIC delay models but im mapping to an FPGA, so being able to control the scheduling of a particular multiplication in the PE would have enabled full bitwidth. Show previous idea of the cycle token way back when)
+
+% also talk about which bugs are still present at the time of concluding
+
+
+\section{Future Work}
+
+% pick some of the future work I have been keeping track of that is prolly in theme with the above discussion
+

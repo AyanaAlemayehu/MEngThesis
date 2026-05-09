@@ -1,3 +1,33 @@
 \chapter{Introduction}
+\setstretch{1.5}
+% time consuming is the management of state and breaking down of algorithms to get full pipeline throughput.
+\section{Motivation}
+Developing with low-level Hardware Description Languages (HDLs) like SystemVerilog can be time consuming. The efficient translation of an algorithm to hardware is often verbose due to the lack of high level abstractions found in modern software development and the inherent physical constraints within the target platform. The verification of a design is arguably even more difficult. Hardware designs can face a multitude of possible inputs, many modules may be running in parallel, and low-level HDLs typically lack safeguards within the langauge to prevent common bugs at compilation time. Even working designs still face further issues in readability, where extensive documentation or programmer expertise is needed to understand the intent behind wire declarations and correctly interface with modules. 
 
-TODO introduction (motivation and contribution(s))
+Efforts exist to improve this workflow and automate some of the typical tasks of a hardware engineer through the introduction of higher level languages and tools. XLS is a higher level synthesis language and library aiming to streamline this development process. It combines software style types, macros, and functional re-use to simplify bit manipulation. It generalizes the common ready-valid interface through its introduction of channels, enabling the programmer to focus on the logic consuming payloads rather than worrying about the validity of the payload itself. When generating SystemVerilog code, XLS handles breaking complicated computations across multiple stages to meet power, performance and area (PPA) requirements while preserving the natural readability of the source code.
+
+However, there are few open source XLS projects that display its capabilities in real world designs. A concern with higher level HDLs is that their abstractions and compilation process can result in worse performance during deployment compared to handwritten low-level implementations. Some higher level HDLs may simply fail to generate certain designs, such as a latency sensitive components where behavior is dependent on the ordering of incoming data. Thus the implementation of a sufficiently large design in XLS that incorporates complicated hardware use cases would provide a useful case study in current XLS development to identify its strengths and weaknesses and give future users a basis to refer to.
+
+\section{Contributions}
+
+HiSparse is a modular sparse matrix-vector (SpMV) accelerator optimized for Field Programmable Gate Array (FPGA) deployment \cite{hisparse}. Originally developed in AMD's Vitis HLS software \cite{vitis}, it displays the capabilities of modern High Level Synthesis (HLS) by efficiently implementing dynamic structures often thought difficult or impossible to do without the fine grain control of traditional low-level HDLs. The implementation of HiSparse in XLS will similarly benchmark XLS' performance and identify the implications of its programming model on the design process. This work implements a variant of the HiSparse architecture \cite{hisparse} in XLS, providing the following contributions:
+
+% figure out what is holding the language back right now, what a programmer needs to do, how to structure your design, 
+
+\begin{enumerate}
+    \item A detailed description of the HiSparse architecture
+    \item A case study on XLS development and design modifications necessary to achieve optimal performance
+    \item A publically available accelerator entirely written in XLS
+\end{enumerate}
+
+
+
+
+
+
+%The readability of designs written with low-level HDLs also suffers and often requires either extensive documentation or programmers expertise to interpret the meaning
+
+
+%. Assumptions regarding when values are meaningful may not hold across clock cycles. These assumptions often arise within communication protocols as modules interact with one another. The ready-valid handshake is a classic example of a deceptively simple communication protocol overloaded with meaning regarding when to set, sample and how long to hold a signal.
+
+%Efforts exist to reduce cognitive overhead and improve workflow of hardware engineers  
