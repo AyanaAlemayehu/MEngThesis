@@ -1,16 +1,30 @@
 \chapter{Conclusion}
+\setstretch{1.5}
 
-We present a variant of the HiSparse SpMV architecture written entirely in XLS. Through the 
+We present a case study of XLS development through the implementation of the HiSparse SpMV FPGA architecture. Due to a mismatch between the built-in XLS test framework and the codegen capabilities of the toolchain, we developed a conservative approach to avoid the related compilation issues and guarantee working hardware. Furthermore, we optimize the conservative approach using Channel Multiplexing and Frontier Splitting techniques, improving streaming throughput for all critical modules. Finally, we identify a shortcoming when attempting to synthesize the design on the Zynq 7000 at 100 Mhz. Unable to pipeline the multiplication operation across multiple cycles, we reduced the bitwidth of the multiply operation within the Processing Engine to maintain the target frequency and throughput performance, sacrificing dynamic range in the process. 
 
-% strict contributions....................
- 
-% what does it mean to conclude this work. 
+Development in XLS provides noticeable benefits over typical low-level Hardware Description Languages. The aforementioned problems and workarounds reflect the current state of the compiler and do not imply fundamental limitations of the language's design. Likewise, the XLS toolchain is constantly under development, and recent features such as channel strictness attributes likely mitigate previous issues \cite{xlsweb}.
 
-% we present a variant of HiSparse written in XLS
+Re-introducing scheduling control of operations to the user as a potential language extension may also improve the toolchain's capabilities. New syntax in Figure~\ref{xlsanvilfilament} represents such an extension inspired by Anvil and related HDLs \cite{anvil}.
 
-% we show the design tradeoffs necessary to achieve performance and the current state of development
+\begin{figure}[H]
+\begin{lstlisting}[label={xlsanvilfilament}, caption=Reintroducing scheduling control to the user, captionpos=b, style=mystyle]
+pub proc adder {
+    //...
 
-\section{Discussion}
+    next( st: ()) {
+        let (tok_a, data_a) = recv(token(), a);
+        let (tok_b, data_b) = recv(token(), b);
+        let tok = join(tok_a, tok_b);
+        let tok_2 = cycles_after(tok, 2);
+        let sum@<tok, tok_2> = data_a + data_b;
+        send(tok_2, c, sum);
+    }
+}
+\end{lstlisting}
+\end{figure}
+
+XLS represents a push towards higher level HDLs aiming to streamline the hardware development process. Such innovation within language design improves access to the potential performance gains of custom hardware, providing us with better tools to tackle the computing challenges of the current age.
 
 % discussion................
 
@@ -21,9 +35,6 @@ We present a variant of the HiSparse SpMV architecture written entirely in XLS. 
 % likewise, the inability to specify the cycle of operations during scheduling makes it hard to influence the scheduler internaly if say the delay model isnt perfect (such as how I only have ASIC delay models but im mapping to an FPGA, so being able to control the scheduling of a particular multiplication in the PE would have enabled full bitwidth. Show previous idea of the cycle token way back when)
 
 % also talk about which bugs are still present at the time of concluding
-
-
-\section{Future Work}
 
 % pick some of the future work I have been keeping track of that is prolly in theme with the above discussion
 
