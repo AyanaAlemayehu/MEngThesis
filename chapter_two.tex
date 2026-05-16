@@ -4,7 +4,7 @@
 \section[XLS Overview]{XLS Overview}
 XLS stands for Accelerated Hardware Synthesis, and is a development toolchain capable of generating both software and hardware designs from code written in either of its languages: XLScc and DSLX \cite{xlsweb}. This flexibility aims to address the growing need of specialized hardware to realize performance gains, enabling users to offload software computations to hardware at their choosing. XLScc is embedded in C++ and DSLX, the language of focus for this work, is their domain specific hardware description language (HDL).
 
-DSLX provides two functional primitives to describe computations: funcs and procs. Funcs are stateless functions that return a value.
+DSLX provides two functional primitives to describe computations: funcs and procs. Funcs are stateless, take in zero or more arguments, and return a value. As an expression-based language, the final expression within a func serves as its output. Funcs can call other funcs within their body.
 
 \begin{figure}[ht]
 \begin{lstlisting}[label={simplefunc}, caption=An example func, captionpos=b, style=mystyle]
@@ -18,9 +18,13 @@ fn mul_add(a: u32, b: u32, c: u32) -> u32 {
 
 % talk more about Kahn process networks, describe them as a message passing model lowerable to hardware (and perhaps that such ordering constraints make it easier to reason about dependencies instead of dealing with more difficult to reason systemverilog that doesnt describe the relationship between things as well), draw mul_add as a Kahn Process Network
 
-Procs, standing for Communicating Sequential Processes, are stateful modules capable of communicating with one another using directional channels. Their model of communication is based upon Kahn Process Networks (KPNs) \cite{kahnprocessnetwork}, a graphical model for describing the flow of computations within a distributed network of processes. Kahn Process Networks consist of processes, channels, and tokens. Processes must obtain a token before sending data to downstream processes. This token may be received from upstream channels or spawned by the process itself. As a result, tokens serve as a mechanism to order operations across processes. XLS likewise uses tokens to control when send and receive operations fire within a proc.
+Procs, standing for Communicating Sequential Processes, are stateful modules capable of communicating with one another using directional channels. They are split into three regions: channel configuration, state, and the activation. The channel configuration region defines how the proc will communicate with other procs and consists of the channel declarations as well as content within the body of the \lstinline[style=mystyle]|config(){}|. The proc's state is initialized within the body of the \lstinline[style=mystyle]|init{}| and is retrieved using the variable name specified in \lstinline[style=mystyle]|next(){}|. In Figure~\ref{simpleproc}, the state is initialized to the unsigned 32 bit integers 0 and 1 that can be accessed as \lstinline[style=mystyle]|rolling_sums.0| and \lstinline[style=mystyle]|rolling_sums.1| respectively. Finally, the activation of a proc is encoded within the body of the \lstinline[style=mystyle]|next(){}| and represents the infinitely recurring logic that defines the behavior of the module.
 
-Kahn Process Networks, and XLS in turn, model channels as infinite depth FIFO queues with non-blocking sends (i.e. they always succeed) and blocking receives. When lowering processes to hardware, XLS translates these channels into latency insensitive connections with blocking, ready valid interfaces on both the sender and receiver. By adhering to pure KPN semantics, procs avoid timing hazard bugs, where the output of the computation is dependent on the execution time of IO operations. However, KPN semantics alone do not support the full breadth of possible hardware designs, such as a module that must arbitrate access to a bus between multiple inputs. For these scenarios, XLS offers non-KPN operations such as \lstinline[style=mystyle]|recv_non_blocking| to allow for latency sensitive designs. The use of these non-KPN operations re-introduces the possibility for timing hazards.
+The model of communication for procs is based upon Kahn Process Networks (KPNs) \cite{kahnprocessnetwork}, a graphical model for describing the flow of computations within a distributed network of processes. Kahn Process Networks consist of processes, channels, and tokens. Processes must obtain a token before sending data to downstream processes. This token may be received from upstream channels or spawned by the process itself. As a result, tokens serve as a mechanism to order operations across processes. XLS likewise uses tokens to control when send and receive operations fire within a proc.
+
+Kahn Process Networks, and XLS in turn, model channels as infinite depth FIFO queues with non-blocking sends (i.e. they always succeed) and blocking receives. When lowering processes to hardware, XLS translates these channels into latency insensitive connections with blocking, ready valid interfaces on both the sender and receiver. By adhering to pure KPN semantics, procs avoid timing hazard bugs, where the output of the computation is dependent on the execution time of IO operations. 
+
+However, KPN semantics alone do not support the full breadth of possible hardware designs, such as a module that must arbitrate access to a bus between multiple inputs. XLS offers non-KPN operations for these scenarios. The \lstinline[style=mystyle]|recv_non_blocking| IO operation only performs a read on a channel when there is a valid message, allowing the rest of the logic within a proc's activation to continue regardless of the status of the channel. Every IO operation also has a conditional variant such as \lstinline[style=mystyle]|send_if| or \lstinline[style=mystyle]|recv_if_non_blocking|. These IO operations take in a boolean that controls whether the operation fires within an activation. The use of these non-KPN operations re-introduces the possibility for timing hazards.
 
 \begin{figure}[ht]
 \begin{lstlisting}[label={simpleproc}, caption=An example proc. join() produces a new token useful for ordering IO operations \textit{after} all the tokens in its parameter list. Procs can hold state across activations., captionpos=b, style=mystyle]
@@ -33,14 +37,17 @@ proc mul_add{
         a: chan<u32> in, b: chan<u32> in,
         c: chan<u32> in, d: chan<u32> out
     ) {(a, b, c, d)}
-    init {u32: 0}
-    next (rolling_sum: u32){
+    init {u32: 0, u32: 1}
+    next (rolling_sums: (u32, u32)){
         let (tok1, av) = recv(token(), a);
         let (tok2, bv) = recv(token(), b);
         let (tok3, cv) = recv(token(), c);
         let tok = join(tok1, tok2, tok3);
         send(tok, d, av*bv + cv);
-        (rolling_sum + av*bv + cv);
+        let new_sum_zero = rolling_sums.1;
+        let new_sum_one = rolling_sums.1 + av*bv + cv;
+        // multiple return values supported via tuples
+        (new_sum_zero, new_sum_one);
     }
 }
 \end{lstlisting}
@@ -53,13 +60,12 @@ proc mul_add{
 \caption[Kahn Process Network]{KPN depiction of Figure~\ref{simpleproc}. Dotted circles represent other procs in the network, arrows represent channels. The mul\_add proc would activate only once tokens were received from channels a, b and c.}
 \end{figure}
 
-DSLX generates hardware by lowering the encoded logic into SystemVerilog modules. The pipelines and state machines generated can be additionally configured through compilation flags.
+% talk about the scheduling algorithm here (sea of nodes IR, SDC scheduling, pipelining)
+% talk about the compilation control (delay models, target freq, pipeline stages)
+
+DSLX generates hardware by lowering the encoded logic into SystemVerilog modules. The compilation process begins by transforming funcs and procs into nodes within their Sea of Nodes intermediate representation (IR). The computations within these nodes are then scheduled using a variation of a System of Difference Constraints (SDC) scheduler \cite{sdc} to solve an optimization problem combining the logic's data dependencies with the hardware constraints of the target platform. The process ends with the generation of pipeline stages using an identified schedule, or returns with an error if no schedule is found. The user can further customize the compilation process by providing a custom delay model to inform the SDC scheduling process and adding constraints like target frequency or number of pipeline stages.
 
 A further introduction to DSLX programming can be found on the XLS website.
-
-% Now bring up Anvil as a separate section and a separate communication model
-\section{Anvil}
-Anvil \cite{anvil} is an HDL that uses an alternative approach to order operations and address timing hazard bugs. Rather than solely use latency insensitive blocking connections, Anvil's channels make use of timing contracts that specify through an event based interval when transactions may occur over a channel. Events within a timing contract may be defined statically as a set number of cycles, or defined dynamically based upon the asynchronous setting of a wire. These timing contracts are described within the declaration of the channel and are statically checked at compile time across module connections to ensure correctness with respect to timing hazards. 
 
 % do i talk about XLS inspirations (Handel-C) and/or compare XLS to existing programming languages?
 \section[Sparse Matrix Computations]{Sparse Matrix Computations} % should i just combine this with hisparse, i am litearlly just going to say SpMV means sparse matrix which means many zeros lol

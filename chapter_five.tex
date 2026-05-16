@@ -3,12 +3,24 @@
 
 We present a case study of XLS development through the implementation of the HiSparse SpMV FPGA architecture. Due to a mismatch between the built-in XLS test framework and the codegen capabilities of the toolchain, we developed a conservative approach to avoid the related compilation issues and guarantee working hardware. Furthermore, we optimize the conservative approach using Channel Multiplexing and Frontier Splitting techniques, improving streaming throughput for all critical modules. Finally, we identify a shortcoming when attempting to synthesize the design on the Zynq 7000 at 100 Mhz. Unable to pipeline the multiplication operation across multiple cycles, we reduced the bitwidth of the multiply operation within the Processing Engine to maintain the target frequency and throughput performance, sacrificing dynamic range in the process. 
 
-Development in XLS provides noticeable benefits over typical low-level Hardware Description Languages. The aforementioned problems and workarounds reflect the current state of the compiler and do not imply fundamental limitations of the language's design. Likewise, the XLS toolchain is constantly under development, and recent features such as channel strictness attributes likely mitigate previous issues \cite{xlsweb}.
+Development in XLS provided noticeable benefits over typical low-level Hardware Description Languages. The latency insensitive, typed channels in procs replaced needless plumbing code while also enabling iteration on the communication protocol itself. Libraries of funcs described the message and its getters and setters, serving as the centralized authority for a particular payload. Furthermore, using tokens to reasoning about individual streams of computations within an activation was a more natural approach to handle the parallel nature of hardware designs. Rather than juggle the parallel executions within a module, tokens allowed for the explicit focus on a single chain of events while the compiler handled the overlapping of computations necessary to reach performance targets. Finally, the general ecosystem of macros, functions and bit-manipulation operators provided many ways to approach a problem.
 
-Re-introducing scheduling control of operations to the user as a potential language extension may also improve the toolchain's capabilities. New syntax in Figure~\ref{xlsanvilfilament} represents such an extension inspired by Anvil and related HDLs \cite{anvil}.
+% enumerate. What did i Like?
+
+% 1) typed streaming channels easily removed the boilerplate code of interfacing with modules, also having a central source (both type definitino and mutating function wise) for the type allowed me to iterate on the protocol without modifying other parts of the design.
+
+% 2) Reasoning about individual streams of computations through tokens is a more natural approach to handling the concurrency of hardware programs. Jugglign the parallel executions of different parts of a module is super difficult, but here I can explicitly focus in on a single chain of events, and let the compiler deal with the overlapping necessary for performance during scheduling.
+
+% 3) the general ecosystem of macros, functions and operation shortcuts within the language is tastefully made
+
+% 4) Despite the shortcomings of the simulation framework, i think the quick testing is quite useful and beats having to switch domains for quick confidence checks. Further development on the test framework to emulate the parallelism of hardware (and ensure the pairity with the codegen capabilities) would be dope. 
+
+Despite the shortcomings of the simulation framework, the capacity for quick confidence testing within the source language sped up implementation as it avoided switching domains. Further development on the test framework to emulate the parallelism of hardware, and also ensure parity with the codegen capabilities of the design, would improve this feature. Overall the aforementioned compilation problems and resulting Channel Multiplexing and Frontier Splitting techniques reflect the current state of the compiler and do not imply fundamental limitations of the language's design. The XLS toolchain is constantly under development, and recent features such as channel strictness attributes likely mitigate previous issues \cite{xlsweb}.
+
+Re-introducing scheduling control of operations to the user as a potential language extension may also improve the toolchain's capabilities. Syntax in Figure~\ref{xlsanvilfilament} represents such an extension inspired by Filament HDL \cite{filament}. The \lstinline[style=mystyle]|cycles_after()| function would intake a token and a number of cycles to wait after the token is received, producing a new token to constrain future operations. Such an extension could potentially address the codegen failures of the full 32 bit processing engine mentioned previously by specifying when intermediate outputs should be staged in the pipeline.
 
 \begin{figure}[H]
-\begin{lstlisting}[label={xlsanvilfilament}, caption=Reintroducing scheduling control to the user, captionpos=b, style=mystyle]
+\begin{lstlisting}[label={xlsanvilfilament}, caption=Reintroducing scheduling control to the user by extending the capabilities of tokens, captionpos=b, style=mystyle]
 pub proc adder {
     //...
 

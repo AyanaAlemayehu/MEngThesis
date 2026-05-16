@@ -81,7 +81,7 @@ pub proc example {
 \end{lstlisting}
 \end{figure}
 
-XLS is a dataflow language with block style syntax, where values are returned at the ends of the blocks. Each match arm in Figure~\ref{tokenmatcharmbug} is a block delineated by the curly brackets, and the return values of the block include a token due to the IO operations present. As mentioned previously, this token must be preserved to update the cross-activation token held in the proc's state to ensure IO operations are ordered across activations. Thus, IO operations had to be separated from the block representing the state to avoid flowing the tokens through match arms and preserve the tokens.
+XLS is an expression oriented language with block style syntax, where values are returned at the ends of the blocks. Each match arm in Figure~\ref{tokenmatcharmbug} is a block delineated by the curly brackets, and the return values of the block include a token due to the IO operations present. As mentioned previously, this token must be preserved to update the cross-activation token held in the proc's state to ensure IO operations are ordered across activations. Thus, IO operations had to be separated from the block representing the state to avoid flowing the tokens through match arms and preserve the tokens.
 
 The second limiting bug involved multiple IO operations per channel per activation. An activation is a single iteration of the logic contained in the \lstinline[style=mystyle]|next(){}| structure of a proc. If the logic involves multiple IO operations on a single channel (for example, multiple sends on a \lstinline[style=mystyle]|addr: chan<u32> out;| channel), a fifo must be described backing the channel in question. This fifo could be used when multiple IO operations contend for the same channel when activations are overlapped with one another, or when downstream connections exert backpressure on a streaming channel and pending operations must be queued until the downstream connection is ready again. However, the mechanism to describe FIFOs for these channels did not work, and the compiler continuously errored due to the missing fifo instantiation. Figure~\ref{multipleiobug} provides an example proc incapable of codegen due to this bug.
 
@@ -231,3 +231,28 @@ Splitting originally monolithic procs into independent send and receive procs in
 
 Luckily, only the shuffle module held a dependency of this form. The shuffle module sampled the shuffle core's outputs to determine when the current column partition had finished. Once the partition completed, the shuffle module would simply read the next incoming matrix payload to figure out if the SOD or EOS command payload should be sent. This behavior was replaced through a combination of modifying the shuffle core and arbiter behavior to support passthrough of command payloads, and the introduction of stream syncing procs to replace the original syncing behavior of the shuffle module. Through these changes, the shuffle module could be removed and this cross-proc data dependency avoided, enabling full streaming throughput for the shuffle module.
 
+Using the above techniques, the following architecture changes were made to the HiSparse architecture:
+\\
+\begin{enumerate}
+    \item \textbf{Matrix Loader}
+    \begin{enumerate}
+        \item Split into two procs: ml\_send and ml\_recv. ml\_send sent address requests to external memory, ml\_recv processed the returned memory payload.
+        \item Metadata and streaming versions of the addr and payload channels were created, with associated mux and demux procs.
+    \end{enumerate}
+    \item \textbf{Shuffle Unit}
+    \begin{enumerate}
+        \item Shuffle unit reduced to shuffler core and arbiter (from original shuffle outer module, shuffle core, and arbiter)
+        \item Arbiter was modified to pass through commands to enable deletion of the shuffle outer module.
+        \item Sync proc introduced to sync command tokens in stream, separating that behavior from the shuffle unit.
+    \end{enumerate}
+    \item \textbf{Vector Buffer Access Unit}
+    \begin{enumerate}
+        \item Split original vector buffer access unit into two procs: vba\_send and vba\_recv. vba\_send sent input vector address requests and vba\_recv paired the returned value with the original payload.
+        \item Loading and streaming versions of the addr and payload channels were created, with associated mux and demux procs.
+    \end{enumerate}
+    \item \textbf{Processing Engine}
+    \begin{enumerate}
+        \item Split original processing engine into two procs: pe\_send and pe\_recv. pe\_send requested the value of the output vector buffer that corresponds to a given input payload, and pe\_recv performs the accumulation and writeback into the output vector buffer.
+        \item Clearing, streaming and result reading versions of the addr and payload channels were created, with associated mux and demux procs.
+    \end{enumerate}
+\end{enumerate}
